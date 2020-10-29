@@ -16,6 +16,7 @@
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 BLEServer *pServer = NULL;
 BLECharacteristic *pCharacteristic = NULL;
+BLEAdvertising *pAdvertising = NULL;
 bool deviceConnected = false;
 uint32_t value = 0;
 
@@ -33,7 +34,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT,
                          OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
 
 //główna flaga zarządzająca przebiegiem programu, przełączana przerwaniem przycisku
-bool flag = false;
+int flag = 0;
 
 //flagi zdarzeń przycisku
 bool buttonIsHeld = false;
@@ -100,10 +101,20 @@ void IRAM_ATTR buttonInterrupt()
       {
         buttonWasHeld = false;
       }
-      else if ((millis() - lastDebounceTime) > 200)
+      else if ((millis() - lastDebounceTime) > 100)
       {
-        flag = true;
-        Serial.println("FLAG SET TO TRUE");
+        if (flag >= 2)
+        {
+          flag--;
+        }
+        else
+        {
+          flag++;
+        }
+
+        blockInput = true; //blokada przycisku
+        Serial.print("FLAG SET TO ");
+        Serial.println(flag);
       }
 
       startPressed = 0;
@@ -187,6 +198,9 @@ class myServerCallback : public BLEServerCallbacks
     Serial.print("Device connected, MAC: ");
     Serial.println(remoteAddress);
 
+    pAdvertising->stop();
+    pCharacteristic->notify();
+
     deviceConnected = true;
   }
 
@@ -195,7 +209,11 @@ class myServerCallback : public BLEServerCallbacks
 
     Serial.println("Device disconnected");
 
+    pAdvertising->start();
+
     deviceConnected = false;
+
+    flag = 0;
   }
 };
 
@@ -207,16 +225,16 @@ void setup()
   Serial.println("Starting BLE work!");
 
   BLEDevice::init("Breathalyzer");
-   esp_ble_auth_req_t auth_req = ESP_LE_AUTH_NO_BOND;     
-   esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;          
-   uint8_t key_size = 16;     
-   uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-   uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-   esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
-   esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
-   esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
-   esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
-   esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
+  esp_ble_auth_req_t auth_req = ESP_LE_AUTH_NO_BOND;
+  esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;
+  uint8_t key_size = 16;
+  uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+  uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+  esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new myServerCallback());
   BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -225,17 +243,16 @@ void setup()
       BLECharacteristic::PROPERTY_READ |
           BLECharacteristic::PROPERTY_WRITE);
 
-  pCharacteristic->setValue("Connected to breathalyzer device");
+  pCharacteristic->setValue("BLOCK");
+  Serial.println("Set to BLOCK");
   pService->start();
 
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
-
-  Serial.println("Characteristic defined! Now you can read it in your phone!");
 
   //konfiguracja buzzera
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -275,8 +292,6 @@ void setup()
     delay(1000);
   }
 
-  eepromClear();
-
   //pobranie wartości kalibracyjnej
   calibValue = analogRead(ADC);
   Serial.print("Calibration value: ");
@@ -294,39 +309,27 @@ void setup()
 
 void loop()
 {
-  while(!deviceConnected) {
-    delay(100);
-  }
-  while(deviceConnected) {
-    pCharacteristic->setValue("OK");
-    pCharacteristic->notify();
-    value++;
-    Serial.println("Sent OK");
-    delay(500);
-  }
-  
   if (deviceConnected)
   {
-    pCharacteristic->setValue("OK");
-    pCharacteristic->notify();
-    value++;
-    Serial.println("Sent OK");
-    delay(500);
-
-    //pętla blokująca wykonanie programu do czasu wciśnięcia przycisku
-    while (!flag)
+    if (flag == 0)
     {
-      delay(100);
+      blockInput = false;
+
+      text = "READY";
+
+      display.clearDisplay();
+      OLED(0, 0, "CONNECTED", 1);
+      OLED((SCREEN_WIDTH - (strlen(text) * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, text, 2);
+      display.display();
+
+      delay(200);
     }
 
-    blockInput = true; //blokada przycisku na czas wykonywania pomiaru
-    measurement = 0;   //zerowanie wartości odczytu
-
-    while (flag)
+    while (flag == 1)
     {
-      //uruchamia się tylko przy pierwszym wejściu do pętli
       if (startMeasuring == 0)
       {
+        measurement = 0; //zerowanie wartości odczytu
         Serial.println("Started measuring");
         delay(1000);
         ledcWriteTone(ledChannel, 1000);
@@ -386,35 +389,40 @@ void loop()
         ret = snprintf(buffer, sizeof buffer, "%f", alcValue / 1000.0);
         OLED((SCREEN_WIDTH - (4 * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, buffer, 2);
         display.display();
-        flag = false;
+
+        Serial.print("Zawartość alkoholu wynosi: ");
+        Serial.println(alcValue);
+
+        if (alcValue < 100)
+        {
+          pCharacteristic->setValue("UNLOCK");
+          pCharacteristic->notify();
+          Serial.println("Sent UNLOCK");
+        }
+
+        flag++;
 
         //zerowanie czasu pomiaru
         startMeasuring = 0;
-        break;
+
+        //wyłączenie blokady przycisku
+        blockInput = false;
+
+        //zerowanie flagi przytrzymania przycisku
+        //buttonWasHeld = false;
       }
     }
+  }
+  else
+  {
+    blockInput = true;
+    text = "READY";
 
-    //wyłączenie blokady przycisku
-    blockInput = false;
-    //zerowanie flagi przytrzymania przycisku
-    buttonWasHeld = false;
+    display.clearDisplay();
+    OLED(0, 0, "NOT CONNECTED", 1);
+    OLED((SCREEN_WIDTH - (strlen(text) * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, text, 2);
+    display.display();
 
-    while (!flag)
-    {
-      /*
-    if (startPressed + 5000 < millis() && buttonIsHeld && !buttonWasHeld)
-    {
-      //ustawnienie flagi przytrzymania przycisku oraz zerowanie czasu rozpoczęcia przytrzymania
-      buttonWasHeld = true;
-      startPressed = 0;
-
-      //czyszczenie pamięci oraz zapisanie ostatnio wykonanego pomiaru
-      eepromClear();
-      eepromSave(alcValue);
-    }
-    */
-      //eepromClear();
-      delay(100);
-    }
+    delay(500);
   }
 }

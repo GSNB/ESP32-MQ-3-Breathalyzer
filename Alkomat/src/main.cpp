@@ -190,23 +190,10 @@ class myServerCallback : public BLEServerCallbacks
     deviceConnected = true;
   }
 
-  void onDisconnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param)
+  void onDisconnect(BLEServer *pServer)
   {
-    Serial.print("Device disconnected, MAC: ");
-    char remoteAddress[20];
 
-    sprintf(
-        remoteAddress,
-        "%.2X:%.2X:%.2X:%.2X:%.2X:%.2X",
-        param->disconnect.remote_bda[0],
-        param->disconnect.remote_bda[1],
-        param->disconnect.remote_bda[2],
-        param->disconnect.remote_bda[3],
-        param->disconnect.remote_bda[4],
-        param->disconnect.remote_bda[5]);
-
-    Serial.print("Device disconnected, MAC: ");
-    Serial.println(remoteAddress);
+    Serial.println("Device disconnected");
 
     deviceConnected = false;
   }

@@ -5,9 +5,19 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_I2CDevice.h>
 #include <EEPROM.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+
+#define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "1813"
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
+BLEServer *pServer = NULL;
+BLECharacteristic *pCharacteristic = NULL;
+bool deviceConnected = false;
+uint32_t value = 0;
 
 // Deklaracje dla sterownika SSD1306 (SPI)
 #define OLED_MOSI 19
@@ -156,9 +166,89 @@ void OLED(int x, int y, int value_decimal, int font_size)
   display.println(value_decimal, 10);
 }
 
+class myServerCallback : public BLEServerCallbacks
+{
+
+  void onConnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param)
+  {
+
+    char remoteAddress[18];
+
+    sprintf(
+        remoteAddress,
+        "%.2X:%.2X:%.2X:%.2X:%.2X:%.2X",
+        param->connect.remote_bda[0],
+        param->connect.remote_bda[1],
+        param->connect.remote_bda[2],
+        param->connect.remote_bda[3],
+        param->connect.remote_bda[4],
+        param->connect.remote_bda[5]);
+
+    Serial.print("Device connected, MAC: ");
+    Serial.println(remoteAddress);
+
+    deviceConnected = true;
+  }
+
+  void onDisconnect(BLEServer *pServer, esp_ble_gatts_cb_param_t *param)
+  {
+    Serial.print("Device disconnected, MAC: ");
+    char remoteAddress[20];
+
+    sprintf(
+        remoteAddress,
+        "%.2X:%.2X:%.2X:%.2X:%.2X:%.2X",
+        param->disconnect.remote_bda[0],
+        param->disconnect.remote_bda[1],
+        param->disconnect.remote_bda[2],
+        param->disconnect.remote_bda[3],
+        param->disconnect.remote_bda[4],
+        param->disconnect.remote_bda[5]);
+
+    Serial.print("Device disconnected, MAC: ");
+    Serial.println(remoteAddress);
+
+    deviceConnected = false;
+  }
+};
+
 void setup()
 {
   Serial.begin(115200);
+
+  Serial.begin(115200);
+  Serial.println("Starting BLE work!");
+
+  BLEDevice::init("Breathalyzer");
+   esp_ble_auth_req_t auth_req = ESP_LE_AUTH_NO_BOND;     
+   esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;          
+   uint8_t key_size = 16;     
+   uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+   uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+   esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
+   esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
+   esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
+   esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
+   esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new myServerCallback());
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  pCharacteristic = pService->createCharacteristic(
+      CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_READ |
+          BLECharacteristic::PROPERTY_WRITE);
+
+  pCharacteristic->setValue("Connected to breathalyzer device");
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+
+  Serial.println("Characteristic defined! Now you can read it in your phone!");
 
   //konfiguracja buzzera
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -198,17 +288,7 @@ void setup()
     delay(1000);
   }
 
-  //pobranie adresu pierwszej wolnej komórki pamięci
-  for (int i = 0; i < 10 * sizeof(int); i += sizeof(int))
-  {
-    if (EEPROM.get(i, memValue) == 0)
-    {
-      address = i;
-      break;
-    }
-  }
-  Serial.print("First free adress is ");
-  Serial.println(address / sizeof(int));
+  eepromClear();
 
   //pobranie wartości kalibracyjnej
   calibValue = analogRead(ADC);
@@ -227,95 +307,114 @@ void setup()
 
 void loop()
 {
-  //pętla blokująca wykonanie programu do czasu wciśnięcia przycisku
-  while (!flag)
-  {
+  while(!deviceConnected) {
     delay(100);
   }
-
-  blockInput = true; //blokada przycisku na czas wykonywania pomiaru
-  measurement = 0;   //zerowanie wartości odczytu
-
-  while (flag)
+  while(deviceConnected) {
+    pCharacteristic->setValue("OK");
+    pCharacteristic->notify();
+    value++;
+    Serial.println("Sent OK");
+    delay(500);
+  }
+  
+  if (deviceConnected)
   {
-    //uruchamia się tylko przy pierwszym wejściu do pętli
-    if (startMeasuring == 0)
+    pCharacteristic->setValue("OK");
+    pCharacteristic->notify();
+    value++;
+    Serial.println("Sent OK");
+    delay(500);
+
+    //pętla blokująca wykonanie programu do czasu wciśnięcia przycisku
+    while (!flag)
     {
-      Serial.println("Started measuring");
-      delay(1000);
-      ledcWriteTone(ledChannel, 1000);
-      startMeasuring = millis();
+      delay(100);
     }
 
-    //odczyt wartości z ADC
-    int temp = analogRead(ADC);
-    if (temp > measurement)
-    {
-      measurement = temp;
-      Serial.println(measurement);
-    }
+    blockInput = true; //blokada przycisku na czas wykonywania pomiaru
+    measurement = 0;   //zerowanie wartości odczytu
 
-    //aproksymacja
-    if (measurement < 944)
+    while (flag)
     {
-      alcValue = 1000 * ((((ya1 - y2) / (calibValue - x2)) * measurement) + (ya1 - ((ya1 - y2) / (calibValue - x2) * calibValue)));
-    }
-    else
-    {
-      alcValue = 1000 * ((((y2 - y3) / (x2 - x3)) * measurement) + (y2 - ((y2 - y3) / (x2 - x3)) * x2));
-    }
-    if (alcValue < 0)
-    {
-      alcValue = 0;
-    }
-
-    display.clearDisplay();
-    ret = snprintf(buffer, sizeof buffer, "%f", alcValue / 1000.0);
-    OLED((SCREEN_WIDTH - (4 * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, buffer, 2);
-    display.display();
-
-    //zdarzenie uruchamia się po ustalonym czasie od rozpoczęcia pomiaru
-    if (startMeasuring + (measureTime * 1000) < millis())
-    {
-      ledcWriteTone(ledChannel, 0);
-      for (int i = measurementDisplayTime * 2; i > 0; --i)
+      //uruchamia się tylko przy pierwszym wejściu do pętli
+      if (startMeasuring == 0)
       {
-        display.clearDisplay();
-        OLED(0, 0, ceil(i / 2), 1);
-
-        //konwersja wartości promili na tekst
-        ret = snprintf(buffer, sizeof buffer, "%f", alcValue / 1000.0);
-        OLED((SCREEN_WIDTH - (4 * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, buffer, 2);
-        display.display();
-        delay(250);
-
-        display.clearDisplay();
-        OLED(0, 0, ceil(i / 2), 1);
-        display.display();
-        delay(250);
+        Serial.println("Started measuring");
+        delay(1000);
+        ledcWriteTone(ledChannel, 1000);
+        startMeasuring = millis();
       }
+
+      //odczyt wartości z ADC
+      int temp = analogRead(ADC);
+      if (temp > measurement)
+      {
+        measurement = temp;
+        Serial.println(measurement);
+      }
+
+      //aproksymacja
+      if (measurement < 944)
+      {
+        alcValue = 1000 * ((((ya1 - y2) / (calibValue - x2)) * measurement) + (ya1 - ((ya1 - y2) / (calibValue - x2) * calibValue)));
+      }
+      else
+      {
+        alcValue = 1000 * ((((y2 - y3) / (x2 - x3)) * measurement) + (y2 - ((y2 - y3) / (x2 - x3)) * x2));
+      }
+      if (alcValue < 0)
+      {
+        alcValue = 0;
+      }
+
       display.clearDisplay();
-      
-      //końcowy druk pomiaru
       ret = snprintf(buffer, sizeof buffer, "%f", alcValue / 1000.0);
       OLED((SCREEN_WIDTH - (4 * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, buffer, 2);
       display.display();
-      flag = false;
 
-      //zerowanie czasu pomiaru
-      startMeasuring = 0;
-      break;
+      //zdarzenie uruchamia się po ustalonym czasie od rozpoczęcia pomiaru
+      if (startMeasuring + (measureTime * 1000) < millis())
+      {
+        ledcWriteTone(ledChannel, 0);
+        for (int i = measurementDisplayTime * 2; i > 0; --i)
+        {
+          display.clearDisplay();
+          OLED(0, 0, ceil(i / 2), 1);
+
+          //konwersja wartości promili na tekst
+          ret = snprintf(buffer, sizeof buffer, "%f", alcValue / 1000.0);
+          OLED((SCREEN_WIDTH - (4 * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, buffer, 2);
+          display.display();
+          delay(250);
+
+          display.clearDisplay();
+          OLED(0, 0, ceil(i / 2), 1);
+          display.display();
+          delay(250);
+        }
+        display.clearDisplay();
+
+        //końcowy druk pomiaru
+        ret = snprintf(buffer, sizeof buffer, "%f", alcValue / 1000.0);
+        OLED((SCREEN_WIDTH - (4 * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, buffer, 2);
+        display.display();
+        flag = false;
+
+        //zerowanie czasu pomiaru
+        startMeasuring = 0;
+        break;
+      }
     }
-  }
 
-  //wyłączenie blokady przycisku
-  blockInput = false;
-  //zerowanie flagi przytrzymania przycisku
-  buttonWasHeld = false;
+    //wyłączenie blokady przycisku
+    blockInput = false;
+    //zerowanie flagi przytrzymania przycisku
+    buttonWasHeld = false;
 
-  while (!flag)
-  {
-    /*
+    while (!flag)
+    {
+      /*
     if (startPressed + 5000 < millis() && buttonIsHeld && !buttonWasHeld)
     {
       //ustawnienie flagi przytrzymania przycisku oraz zerowanie czasu rozpoczęcia przytrzymania
@@ -327,7 +426,8 @@ void loop()
       eepromSave(alcValue);
     }
     */
-   //eepromClear();
-   delay(100);
+      //eepromClear();
+      delay(100);
+    }
   }
 }

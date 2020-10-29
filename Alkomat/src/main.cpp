@@ -3,6 +3,7 @@
 #include <driver/adc.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Adafruit_I2CDevice.h>
 #include <EEPROM.h>
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
@@ -56,7 +57,7 @@ int resolution = 8;
 const int ledChannel = 0;
 
 //parametry czasowe
-int heatTime = 300;             //czas nagrzewania, w sekundach
+int heatTime = 10;              //czas nagrzewania, w sekundach
 int measureTime = 5;            //czas pomiaru, w sekundach
 int measurementDisplayTime = 5; //czas wyświetlania wyniku pomiaru, w sekundach
 
@@ -293,10 +294,13 @@ void loop()
         display.display();
         delay(250);
       }
+      display.clearDisplay();
+      
+      //końcowy druk pomiaru
+      ret = snprintf(buffer, sizeof buffer, "%f", alcValue / 1000.0);
+      OLED((SCREEN_WIDTH - (4 * 11)) / 2, (SCREEN_HEIGHT - 16) / 2, buffer, 2);
+      display.display();
       flag = false;
-
-      //zapis pomiaru do pamięci
-      eepromSave(alcValue);
 
       //zerowanie czasu pomiaru
       startMeasuring = 0;
@@ -311,18 +315,7 @@ void loop()
 
   while (!flag)
   {
-    display.clearDisplay();
-    for (int i = 0; i < 10 * sizeof(int); i += sizeof(int))
-    {
-      if (EEPROM.get(i, temp) != 0) //pominięcie pustych adresów
-      {
-        //druk słupka wykresu
-        display.fillRect(i + 3, SCREEN_HEIGHT - map(temp, 0, 4000, 0, display.height()), 3, map(temp, 0, 4000, 0, display.height()), SSD1306_WHITE);
-      }
-    }
-    display.display();
-
-    //zdarzenie przytrzymania przycisku przez 5s
+    /*
     if (startPressed + 5000 < millis() && buttonIsHeld && !buttonWasHeld)
     {
       //ustawnienie flagi przytrzymania przycisku oraz zerowanie czasu rozpoczęcia przytrzymania
@@ -333,5 +326,8 @@ void loop()
       eepromClear();
       eepromSave(alcValue);
     }
+    */
+   //eepromClear();
+   delay(100);
   }
 }
